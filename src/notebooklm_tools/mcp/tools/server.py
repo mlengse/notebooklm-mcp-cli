@@ -1,7 +1,6 @@
 """Server tools - Server info and version checking."""
 
 import json
-import time
 import urllib.request
 from typing import Any, cast
 
