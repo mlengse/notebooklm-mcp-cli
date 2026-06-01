@@ -56,7 +56,6 @@ def refresh_auth() -> ResultDict:
                     status="expired",
                     reason=check.reason,
                 )
-            # Tokens are valid — reset and re-initialize the client.
             reset_client()
             get_client()
             return {

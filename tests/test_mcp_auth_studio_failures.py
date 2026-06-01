@@ -119,7 +119,7 @@ def test_studio_create_fails_loudly_on_stale_auth(monkeypatch):
     — not status:"success" with an artifact_id that immediately fails.
     """
     monkeypatch.setattr(
-        studio_tools, "_check_studio_auth", lambda: _auth_result(False, "expired"), raising=False
+        core_auth, "check_auth", lambda **kw: _auth_result(False, "expired"), raising=True
     )
 
     # If the code wrongly proceeds, make the client call explode so the test can't pass by luck.
@@ -145,9 +145,7 @@ def test_studio_create_fails_loudly_on_stale_auth(monkeypatch):
 
 def test_studio_create_proceeds_when_auth_valid(monkeypatch):
     """With valid auth, studio_create() must still create the artifact normally."""
-    monkeypatch.setattr(
-        studio_tools, "_check_studio_auth", lambda: _auth_result(True), raising=False
-    )
+    monkeypatch.setattr(core_auth, "check_auth", lambda **kw: _auth_result(True), raising=True)
     monkeypatch.setattr(studio_tools, "get_client", lambda: _FakeClient(), raising=True)
     monkeypatch.setattr(
         studio_tools.studio_service,
@@ -254,7 +252,7 @@ def test_studio_create_e2e_per_auth_state(monkeypatch, auth_state, valid, reason
     status:"error" (never a fake success).
     """
     monkeypatch.setattr(
-        studio_tools, "_check_studio_auth", lambda: _auth_result(valid, reason), raising=False
+        core_auth, "check_auth", lambda **kw: _auth_result(valid, reason), raising=True
     )
     monkeypatch.setattr(studio_tools, "get_client", lambda: _FakeClient(), raising=True)
     monkeypatch.setattr(
