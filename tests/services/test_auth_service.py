@@ -164,28 +164,30 @@ def test_shim_class_resolution_does_not_cache_across_patches(monkeypatch):
 # --------------------------------------------------------------------------- #
 # get_active_auth_mtime — guards the auth-guard mtime check against the
 # real auth-file layout (modern multi-profile vs. legacy single-file).
+#
+# Note: the helper stats ALL `cookies.json` files under `profiles/`, not
+# just the config-default profile's, so an external `nlm login --profile
+# <other>` correctly invalidates the guard even if it doesn't match the
+# config's `default_profile`. Live-testing caught the narrower version of
+# this bug in v0.6.15 prep.
 # --------------------------------------------------------------------------- #
-def test_get_active_auth_mtime_reads_modern_profile_cookies(monkeypatch, tmp_path):
-    """Modern users have auth in `profiles/<name>/cookies.json`. The mtime
-    helper must stat THAT file, not the legacy `auth.json`.
+def test_get_active_auth_mtime_reads_any_profile_cookies(monkeypatch, tmp_path):
+    """The helper must stat every `cookies.json` under `profiles/`, not
+    just the one for the config-default profile. A write to ANY profile's
+    file invalidates the guard.
     """
     import time as _time
-    from types import SimpleNamespace
 
-    profile_dir = tmp_path / "profiles" / "personal"
-    profile_dir.mkdir(parents=True)
-    cookies_file = profile_dir / "cookies.json"
-    cookies_file.write_text("{}")
-    expected_mtime = cookies_file.stat().st_mtime
+    profiles_dir = tmp_path / "profiles"
+    personal_dir = profiles_dir / "personal"
+    personal_dir.mkdir(parents=True)
+    personal_cookies = personal_dir / "cookies.json"
+    personal_cookies.write_text("{}")
+    personal_mtime = personal_cookies.stat().st_mtime
 
     monkeypatch.setattr(
-        "notebooklm_tools.utils.config.get_config",
-        lambda: SimpleNamespace(auth=SimpleNamespace(default_profile="personal")),
-        raising=True,
-    )
-    monkeypatch.setattr(
-        "notebooklm_tools.utils.config.get_profile_dir",
-        lambda name: tmp_path / "profiles" / name,
+        "notebooklm_tools.utils.config.get_profiles_dir",
+        lambda: profiles_dir,
         raising=True,
     )
     monkeypatch.setattr(
@@ -194,35 +196,35 @@ def test_get_active_auth_mtime_reads_modern_profile_cookies(monkeypatch, tmp_pat
         raising=True,
     )
 
-    assert services_auth.get_active_auth_mtime() == expected_mtime
-    # Sanity: a slightly later read (no file change) returns the same mtime.
-    _time.sleep(0.01)
-    assert services_auth.get_active_auth_mtime() == expected_mtime
+    assert services_auth.get_active_auth_mtime() == personal_mtime
+
+    # Touch a different profile's cookies.json. Result must follow.
+    _time.sleep(0.02)
+    work_dir = profiles_dir / "work"
+    work_dir.mkdir()
+    work_cookies = work_dir / "cookies.json"
+    work_cookies.write_text("{}")
+    work_mtime = work_cookies.stat().st_mtime
+    assert work_mtime > personal_mtime
+    assert services_auth.get_active_auth_mtime() == work_mtime
 
 
 def test_get_active_auth_mtime_falls_back_to_legacy_auth_json(monkeypatch, tmp_path):
-    """Legacy users have auth in `<storage>/auth.json` with no profile dir.
-    The mtime helper must stat that file when the modern path doesn't exist.
+    """Legacy users have auth in `<storage>/auth.json` and no profile
+    cookies.json. The mtime helper must still return the legacy file's
+    mtime in that case.
     """
-    from types import SimpleNamespace
+    profiles_dir = tmp_path / "profiles" / "default"
+    profiles_dir.mkdir(parents=True)
+    # No cookies.json inside — modern path is absent.
 
     legacy_file = tmp_path / "auth.json"
     legacy_file.write_text("{}")
     expected_mtime = legacy_file.stat().st_mtime
 
-    # get_profile_dir returns a non-existent dir (no modern profile).
-    empty_profile_dir = tmp_path / "profiles" / "default"
-    empty_profile_dir.mkdir(parents=True)
-    # No cookies.json inside the profile dir — modern path is absent.
-
     monkeypatch.setattr(
-        "notebooklm_tools.utils.config.get_config",
-        lambda: SimpleNamespace(auth=SimpleNamespace(default_profile="default")),
-        raising=True,
-    )
-    monkeypatch.setattr(
-        "notebooklm_tools.utils.config.get_profile_dir",
-        lambda name: empty_profile_dir,
+        "notebooklm_tools.utils.config.get_profiles_dir",
+        lambda: tmp_path / "profiles",
         raising=True,
     )
     monkeypatch.setattr(
@@ -234,37 +236,26 @@ def test_get_active_auth_mtime_falls_back_to_legacy_auth_json(monkeypatch, tmp_p
     assert services_auth.get_active_auth_mtime() == expected_mtime
 
 
-def test_get_active_auth_mtime_returns_max_when_both_exist(monkeypatch, tmp_path):
-    """During migration, both the legacy and modern files may exist. The
-    mtime helper must return the LARGER mtime so a write to EITHER file
-    invalidates the guard.
+def test_get_active_auth_mtime_returns_max_across_profiles_and_legacy(monkeypatch, tmp_path):
+    """Across N profile cookies.json files plus the legacy auth.json, the
+    helper must return the maximum mtime. This pins the contract that a
+    write to any single file invalidates the guard.
     """
     import time as _time
-    from types import SimpleNamespace
 
-    profile_dir = tmp_path / "profiles" / "personal"
-    profile_dir.mkdir(parents=True)
-    cookies_file = profile_dir / "cookies.json"
-    cookies_file.write_text("{}")
+    profiles_dir = tmp_path / "profiles"
+    (profiles_dir / "personal").mkdir(parents=True)
+    (profiles_dir / "work").mkdir()
+    personal_cookies = profiles_dir / "personal" / "cookies.json"
+    work_cookies = profiles_dir / "work" / "cookies.json"
     legacy_file = tmp_path / "auth.json"
+    personal_cookies.write_text("{}")
+    work_cookies.write_text("{}")
     legacy_file.write_text("{}")
 
-    # Make the legacy file strictly newer.
-    _time.sleep(0.02)
-    legacy_file.touch()
-
-    legacy_mtime = legacy_file.stat().st_mtime
-    cookies_mtime = cookies_file.stat().st_mtime
-    assert legacy_mtime > cookies_mtime
-
     monkeypatch.setattr(
-        "notebooklm_tools.utils.config.get_config",
-        lambda: SimpleNamespace(auth=SimpleNamespace(default_profile="personal")),
-        raising=True,
-    )
-    monkeypatch.setattr(
-        "notebooklm_tools.utils.config.get_profile_dir",
-        lambda name: tmp_path / "profiles" / name,
+        "notebooklm_tools.utils.config.get_profiles_dir",
+        lambda: profiles_dir,
         raising=True,
     )
     monkeypatch.setattr(
@@ -273,32 +264,30 @@ def test_get_active_auth_mtime_returns_max_when_both_exist(monkeypatch, tmp_path
         raising=True,
     )
 
-    assert services_auth.get_active_auth_mtime() == legacy_mtime
-    # Now make cookies.json the newer one. The result must follow.
+    # The max of all three.
+    expected = max(
+        personal_cookies.stat().st_mtime,
+        work_cookies.stat().st_mtime,
+        legacy_file.stat().st_mtime,
+    )
+    assert services_auth.get_active_auth_mtime() == expected
+
+    # Touch personal cookies; result must follow.
     _time.sleep(0.02)
-    cookies_file.touch()
-    new_cookies_mtime = cookies_file.stat().st_mtime
-    assert new_cookies_mtime > legacy_mtime
-    assert services_auth.get_active_auth_mtime() == new_cookies_mtime
+    personal_cookies.touch()
+    assert services_auth.get_active_auth_mtime() == personal_cookies.stat().st_mtime
 
 
 def test_get_active_auth_mtime_returns_zero_when_no_files(monkeypatch, tmp_path):
     """Fresh install with no auth file at all must return 0.0 (sentinel for
-    'no cache yet'), not raise. This keeps first-call behavior consistent.
+    'no cache yet'), not raise.
     """
-    from types import SimpleNamespace
-
-    empty_profile_dir = tmp_path / "profiles" / "default"
-    empty_profile_dir.mkdir(parents=True)
+    empty_profiles = tmp_path / "profiles"
+    empty_profiles.mkdir()
 
     monkeypatch.setattr(
-        "notebooklm_tools.utils.config.get_config",
-        lambda: SimpleNamespace(auth=SimpleNamespace(default_profile="default")),
-        raising=True,
-    )
-    monkeypatch.setattr(
-        "notebooklm_tools.utils.config.get_profile_dir",
-        lambda name: empty_profile_dir,
+        "notebooklm_tools.utils.config.get_profiles_dir",
+        lambda: empty_profiles,
         raising=True,
     )
     monkeypatch.setattr(
@@ -308,6 +297,29 @@ def test_get_active_auth_mtime_returns_zero_when_no_files(monkeypatch, tmp_path)
     )
 
     assert services_auth.get_active_auth_mtime() == 0.0
+
+
+def test_get_active_auth_mtime_survives_missing_profiles_dir(monkeypatch, tmp_path):
+    """If the profiles directory does not exist (rare; pre-migration or
+    wiped install), the helper must still return the legacy auth.json
+    mtime, not raise.
+    """
+    legacy_file = tmp_path / "auth.json"
+    legacy_file.write_text("{}")
+    expected_mtime = legacy_file.stat().st_mtime
+
+    monkeypatch.setattr(
+        "notebooklm_tools.utils.config.get_profiles_dir",
+        lambda: tmp_path / "profiles",  # does not exist
+        raising=True,
+    )
+    monkeypatch.setattr(
+        "notebooklm_tools.utils.config.get_storage_dir",
+        lambda: tmp_path,
+        raising=True,
+    )
+
+    assert services_auth.get_active_auth_mtime() == expected_mtime
 
 
 def test_get_active_auth_mtime_swallows_exceptions(monkeypatch):
@@ -321,7 +333,7 @@ def test_get_active_auth_mtime_swallows_exceptions(monkeypatch):
         raise RuntimeError("config corrupted")
 
     monkeypatch.setattr(
-        "notebooklm_tools.utils.config.get_config",
+        "notebooklm_tools.utils.config.get_storage_dir",
         _explode,
         raising=True,
     )

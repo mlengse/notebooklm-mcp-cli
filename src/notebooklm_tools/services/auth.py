@@ -74,35 +74,43 @@ def validate_cookies(cookies):
 
 
 def get_active_auth_mtime() -> float:
-    """Return the most recent mtime of the active auth storage, or 0.0.
+    """Return the most recent mtime of any auth storage on disk, or 0.0.
 
-    The CLI/MCP codebase stores auth in two locations:
+    The CLI/MCP codebase stores auth in two layouts that can coexist:
 
-    - **Modern (multi-profile):** `~/.notebooklm-mcp-cli/profiles/<name>/cookies.json`,
-      where `<name>` is the active profile from the config.
-    - **Legacy (single-profile):** `~/.notebooklm-mcp-cli/auth.json` (no profile).
+    - **Modern (multi-profile):** `~/.notebooklm-mcp-cli/profiles/<name>/cookies.json`
+      for each profile `<name>` in the profiles directory.
+    - **Legacy (single-profile):** `~/.notebooklm-mcp-cli/auth.json` at the
+      storage root, used by older installs and some MCP clients.
 
-    Both can exist simultaneously during migration. This function stats both
-    (whichever the current layout uses) and returns the latest mtime, so a
-    change to either file invalidates a caller-side cache. Returns 0.0 if
-    no auth file exists yet, which is the same sentinel the rest of the
-    auth-guard machinery uses for "no cache yet".
+    The auth-guard mtime check needs to invalidate on a write to ANY of
+    these files, not just the one for the "default" profile — because the
+    active profile for a given MCP/CLI session can be overridden with
+    `--profile`, while the config-level `default_profile` stays put. If
+    we only watched the config-default profile's file, an external
+    `nlm login --profile <other>` would silently fail to invalidate the
+    guard (live-testing caught this exact bug in v0.6.15 prep).
 
-    Catches all exceptions and returns 0.0 on error: this is a best-effort
-    cache-invalidation hint, never a hard failure. A wrong answer is far
-    less harmful than a 500 on `studio_create`.
+    This function stats every `cookies.json` under `profiles/`, the
+    legacy `auth.json` at the storage root, and returns the max mtime.
+    A write to any of them invalidates the guard. Returns 0.0 if no auth
+    file exists yet (sentinel for "no cache yet").
+
+    Catches all exceptions and returns 0.0 on error: a wrong mtime answer
+    is far less harmful than a 500 on `studio_create` from an unrelated
+    config error.
     """
     try:
         import contextlib
 
-        from notebooklm_tools.utils.config import get_config, get_profile_dir, get_storage_dir
+        from notebooklm_tools.utils.config import get_profiles_dir, get_storage_dir
 
-        cfg = get_config()
-        profile = cfg.auth.default_profile
-        candidates = (
-            get_profile_dir(profile) / "cookies.json",
-            get_storage_dir() / "auth.json",
-        )
+        candidates = [get_storage_dir() / "auth.json"]
+        try:
+            profiles_dir = get_profiles_dir()
+            candidates.extend(profiles_dir.glob("*/cookies.json"))
+        except (OSError, FileNotFoundError):
+            pass
 
         latest = 0.0
         for path in candidates:
