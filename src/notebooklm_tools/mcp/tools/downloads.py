@@ -1,10 +1,28 @@
 """Download tools - Consolidated download_artifact for all artifact types."""
 
 import asyncio
+import time
+from urllib.parse import quote
 
 from ...services import ServiceError, ValidationError
 from ...services import downloads as downloads_service
-from ._utils import ResultDict, error_result, get_client, logged_tool
+from ._utils import PUBLIC_DIR, ResultDict, error_result, get_client, get_mcp_base_url, logged_tool
+
+
+def _download_transient(message: str) -> bool:
+    """Return True for NotebookLM artifact states that may resolve after polling."""
+    lowered = message.lower()
+    return any(
+        phrase in lowered
+        for phrase in (
+            "not ready",
+            "does not exist",
+            "still propagating",
+            "try again",
+            "download failed",
+            "is complete, but its media download url is still propagating",
+        )
+    )
 
 
 @logged_tool()
@@ -15,6 +33,9 @@ def download_artifact(
     artifact_id: str | None = None,
     output_format: str = "json",
     slide_deck_format: str = "pdf",
+    wait: bool = True,
+    wait_timeout: float = 180.0,
+    poll_interval: float = 5.0,
 ) -> ResultDict:
     """Download any NotebookLM artifact to a file.
 
@@ -38,6 +59,9 @@ def download_artifact(
         artifact_id: Optional specific artifact ID (uses latest if not provided)
         output_format: For quiz/flashcards only: json|markdown|html (default: json)
         slide_deck_format: For slide_deck only: pdf (default) or pptx
+        wait: If True, poll while NotebookLM is still generating or propagating the artifact.
+        wait_timeout: Maximum seconds to wait when wait=True.
+        poll_interval: Seconds between readiness checks.
 
     Returns:
         dict with status and saved file path
@@ -49,18 +73,55 @@ def download_artifact(
     """
     try:
         client = get_client()
-        download_result = asyncio.run(
-            downloads_service.download_async(
-                client,
-                notebook_id,
-                artifact_type,
-                output_path,
-                artifact_id=artifact_id,
-                output_format=output_format,
-                slide_deck_format=slide_deck_format,
+        deadline = time.monotonic() + max(0.0, wait_timeout)
+        attempts = 0
+
+        while True:
+            attempts += 1
+            try:
+                download_result = asyncio.run(
+                    downloads_service.download_async(
+                        client,
+                        notebook_id,
+                        artifact_type,
+                        output_path,
+                        artifact_id=artifact_id,
+                        output_format=output_format,
+                        slide_deck_format=slide_deck_format,
+                    )
+                )
+                break
+            except ServiceError as e:
+                message = f"{e.user_message} {e}"
+                if not wait or not _download_transient(message) or time.monotonic() >= deadline:
+                    raise
+                time.sleep(max(0.5, poll_interval))
+
+        saved_path = download_result["path"]
+        try:
+            import shutil
+            from pathlib import Path
+
+            PUBLIC_DIR.mkdir(parents=True, exist_ok=True)
+            pub_path = PUBLIC_DIR / Path(saved_path).name
+            shutil.copy2(saved_path, pub_path)
+
+            base_url = get_mcp_base_url()
+            if base_url:
+                return {
+                    "status": "success",
+                    **download_result,
+                    "download_url": f"{base_url}/artifacts/{quote(pub_path.name)}",
+                }
+        except Exception as e:
+            import logging
+
+            logging.getLogger("notebooklm_tools.mcp").warning(
+                f"Failed to copy public artifact: {e}"
             )
-        )
+
         return {"status": "success", **download_result}
+
     except ValidationError as e:
         message = str(e)
         if message.startswith("Unknown artifact type "):
