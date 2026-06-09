@@ -7,21 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.7.2] - 2026-06-08
+## [0.7.3] - 2026-06-09
 
 ### Added
 
-- **ChatGPT File Parameter Upload Bridge (PR #220)** — Enables direct upload of files provided by ChatGPT App/Action clients by resolving and downloading from the client's temporary HTTPS URL before uploading to Google NotebookLM. Thanks to **@insane66613**!
-- **ChatGPT Artifact Download Bridge (PR #220)** — Allows copying generated artifacts to the local server's public directory and returning public download links when the server runs behind secure tunnels. Exposes a new `/artifacts/{filename}` route in the MCP HTTP server. Thanks to **@insane66613**!
-- **Transient Source Content Polling** (`poll_source_content` service function) — Automatically handles Google NotebookLM indexing states (processing, indexing, try again) via robust polling with exponential backoff when fetching raw source contents immediately after creation.
+- **Scripting & Automation section in CLI_GUIDE.md (PR #226)** — Documents how to reliably parse `--json` output in automation scripts using a JSON parser rather than string splitting. Thanks to **@JanaGK2** for the first contribution!
 
 ### Fixed
 
-- **Sanitize `no_proxy` environment variable (PR #221)** — Fixed package import crashes on Windows systems by cleaning up the `no_proxy` environment variable on initialization before `httpx` parses it. Thanks to **@insane66613**!
+- **Reverted ChatGPT file bridge (PR #220)** — The ChatGPT file upload/download bridge introduced an SSRF vulnerability (no hostname validation on downloaded URLs), a disk leak (every `source_get_content` call wrote files to disk with no cleanup), and unintended behavioral changes to `source_get_content` and `download_artifact` for all users. The feature has been reverted. A future release will re-introduce the polling improvements (`wait`/`poll_interval`) cleanly, and the ChatGPT integration may return in a hardened form.
+- **Tightened `no_proxy` sanitization** — The v0.7.2 sanitizer stripped all `no_proxy` entries containing `:`, incorrectly removing legitimate IPv6 loopback addresses (`::1`) and `host:port` entries. The fix now targets only CIDR-style IPv6 entries (e.g., `fe11::/16`) that crash httpx's URL parser, preserving all other valid entries.
+
+## [0.7.2] - 2026-06-08
+
+### Fixed
+
 - **Modern Chrome Cookie DB path detection (PR #222)** — Improved the SQLite cookie database location search logic for Google Chrome to work correctly with modern Chrome setups. Thanks to **@insane66613**!
 - **Profile-aware headless refresh (PR #223)** — Fixed headless login refresh to use the default/active profile configured in the CLI configuration file instead of falling back. Thanks to **@insane66613**!
 - **`AuthHealthChecker` API fallback passed wrong cookie format, causing false `stale` on semi-stale sessions (PR #225)** — The API fallback flattened `profile.cookies` to a dict, dropping domain-specific duplicates and omitting `session_id` / `build_label`. The API probe now passes `profile.cookies` unchanged with all session fields, matching `nlm login --check`. Thanks to **@insane66613**!
 - **`server_info`, `refresh_auth`, and `studio_create` disagreed on semi-stale auth (PR #225, Fixes #224)** — These three MCP paths each ran independent auth checks, so `server_info` could report `stale` and `studio_create` refuse to run while `notebook_list` and CLI tools worked fine. All MCP auth gates now share `credentials_are_usable()` (`AuthHealthChecker` + live API confirmation), eliminating split-brain results. Thanks to **@insane66613**!
+- **Sanitize `no_proxy` environment variable (PR #221)** — Fixed package import crashes on Windows systems caused by CIDR-style IPv6 entries in `no_proxy` that httpx cannot parse. Thanks to **@insane66613**!
 
 ## [0.7.1] - 2026-06-06
 

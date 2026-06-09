@@ -372,14 +372,24 @@ nlm download audio ai <artifact-id> --output podcast.mp3
 
 ## Scripting & Automation
 
+### Getting IDs for piping
+
+Use `--quiet` when you only need IDs — it outputs one ID per line, no parsing required:
+
+```bash
+# Grab the first notebook ID in a shell script
+notebook_id=$(nlm notebook list --quiet | head -1)
+nlm notebook query "$notebook_id" "Summarize key points"
+```
+
 ### Parsing `--json` output
 
-The `--json` flag emits pretty-printed JSON. When writing automation scripts that capture
-notebook or source IDs from command output, use a JSON parser — not string splitting.
+When you need more than just IDs (title, source count, etc.), use `--json`. It emits
+clean JSON to stdout — always parse it properly rather than splitting strings:
 
-**Reliable (works regardless of formatting):**
 ```python
-import json, subprocess, re
+import json
+import subprocess
 
 result = subprocess.run(
     ["nlm", "notebook", "list", "--json"],
@@ -387,3 +397,4 @@ result = subprocess.run(
 )
 notebooks = json.loads(result.stdout)
 notebook_id = notebooks[0]["id"]   # UUID like "abc12345-..."
+```
